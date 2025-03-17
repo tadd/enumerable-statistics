@@ -755,8 +755,10 @@ not_exact:
         x = rb_big2dbl(e);
       else if (RB_TYPE_P(e, T_RATIONAL))
         x = rb_num2dbl(e);
-      else
+      else {
+        v = DBL2NUM(f);
         goto not_float;
+      }
 
       y = x - c;
       t = f + y;
@@ -767,21 +769,19 @@ not_exact:
     v = DBL2NUM(f);
     goto finish;
 
-  not_float:
-    v = DBL2NUM(f);
   }
 
-  goto has_some_value;
-  for (; i < RARRAY_LEN(ary); i++) {
+not_float:
+  for (;;) {
+    v = rb_funcall(v, idPLUS, 1, e);
+    i++;
+    if (i >= RARRAY_LEN(ary))
+      break;
     e = RARRAY_AREF(ary, i);
     if (block_given)
       e = rb_yield(e);
-    if (skip_na && is_na(e)) {
+    if (skip_na && is_na(e))
       ++na_count;
-      continue;
-    }
-  has_some_value:
-    v = rb_funcall(v, idPLUS, 1, e);
   }
 
 finish:
@@ -1713,11 +1713,11 @@ ary_percentile_single(VALUE ary, VALUE q)
       /* fall through */
     default:
       qf = NUM2DBL(q);
-      goto float_percentile;
+      d = RFLOAT_VALUE(qf);
+      break;
 
     case T_FLOAT:
       qf = q;
-float_percentile:
       d = RFLOAT_VALUE(qf);
       break;
   }
@@ -1784,11 +1784,11 @@ ary_percentile(VALUE ary, VALUE q)
           /* fall through */
         default:
           qf = NUM2DBL(q);
-          goto float_percentile;
+          d = RFLOAT_VALUE(qf);
+          break;
 
         case T_FLOAT:
           qf = q;
-float_percentile:
           d = RFLOAT_VALUE(qf);
           break;
       }
@@ -1799,6 +1799,18 @@ float_percentile:
   }
 
   return res;
+}
+
+static VALUE
+mean_two(VALUE a0, VALUE a1)
+{
+  a0 = rb_funcall(a0, idPLUS, 1, a1); /* TODO: optimize */
+  if (RB_INTEGER_TYPE_P(a0) || RB_FLOAT_TYPE_P(a0) || RB_TYPE_P(a0, T_RATIONAL)) {
+    double d = NUM2DBL(a0);
+    return DBL2NUM(d / 2.0);
+  }
+
+  return rb_funcall(a0, idDIV, 1, DBL2NUM(2.0));
 }
 
 /* call-seq:
@@ -1823,7 +1835,7 @@ ary_median(VALUE ary)
     case 2:
       a0 = RARRAY_AREF(ary, 0);
       a1 = RARRAY_AREF(ary, 1);
-      goto mean_two;
+      return mean_two(a0, a1);
     default:
       break;
   }
@@ -1842,15 +1854,7 @@ return_nan:
   }
   else {
     a0 = RARRAY_AREF(sorted, n / 2 - 1);
-
-mean_two:
-    a0 = rb_funcall(a0, idPLUS, 1, a1); /* TODO: optimize */
-    if (RB_INTEGER_TYPE_P(a0) || RB_FLOAT_TYPE_P(a0) || RB_TYPE_P(a0, T_RATIONAL)) {
-      double d = NUM2DBL(a0);
-      return DBL2NUM(d / 2.0);
-    }
-
-    return rb_funcall(a0, idDIV, 1, DBL2NUM(2.0));
+    return mean_two(a0, a1);
   }
 }
 
