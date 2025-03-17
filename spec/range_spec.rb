@@ -100,4 +100,39 @@ RSpec.describe Enumerable do
       end
     end
   end
+
+  describe '#geomean' do
+    subject(:geomean) { enum.geomean(&block) }
+    let(:block) { nil }
+
+    with_enum 1..0 do
+      it_is_float_equal(0.0)
+
+      context 'with a conversion block' do
+        it_is_float_equal(0.0)
+
+        it 'does not call the block' do
+          expect { |b|
+            enum.geomean(&b)
+          }.not_to yield_control
+        end
+      end
+    end
+
+    with_enum 3..3 do
+      it_is_float_equal(3.0)
+
+      with_conversion ->(v) { v * 2 }, 'v * 2' do
+        it_is_float_equal(6.0)
+      end
+    end
+
+    with_enum 3..5 do
+      it_is_float_equal(4.0)
+
+      with_conversion ->(v) { v * 2 }, 'v * 2' do
+        it_is_float_equal(8.0)
+      end
+    end
+  end if nil
 end

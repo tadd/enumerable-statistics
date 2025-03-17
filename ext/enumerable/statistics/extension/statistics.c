@@ -850,6 +850,35 @@ calculate_and_set_mean(VALUE *mean_ptr, VALUE sum, long const n)
     SET_MEAN(rb_funcall(sum, idDIV, 1, DBL2NUM(n)));
 }
 
+#if 0
+static void
+calculate_and_set_geomean(VALUE *mean_ptr, VALUE logsum, long const n)
+{
+  if (RB_TYPE_P(logsum, T_COMPLEX)) {
+    VALUE real_geomean, imag_geomean;
+    VALUE const real = RCOMPLEX(logsum)->real;
+    VALUE const imag = RCOMPLEX(logsum)->imag;
+
+    if (RB_FLOAT_TYPE_P(real) && RB_FLOAT_TYPE_P(imag)) {
+      real_geomean = DBL2NUM(exp(RFLOAT_VALUE(real) / n));
+      imag_geomean = DBL2NUM(exp(RFLOAT_VALUE(imag) / n));
+      SET_MEAN(complex_new(CLASS_OF(logsum), real_geomean, imag_geomean));
+    }
+    else { // FIXME!
+      VALUE logmean = rb_funcall(logsum, idDIV, 1, DBL2NUM(n));
+      SET_MEAN(rb_funcall(rb_float_new(M_E), idPow, 1, logmean));
+    }
+  }
+  else if (RB_FLOAT_TYPE_P(logsum)) {
+    SET_MEAN(DBL2NUM(exp(RFLOAT_VALUE(logsum) / n)));
+  }
+  else {
+    VALUE logmean = rb_funcall(logsum, idDIV, 1, DBL2NUM(n));
+    SET_MEAN(rb_funcall(rb_float_new(M_E), idPow, 1, logmean));
+  }
+}
+#endif
+
 static void
 ary_mean_variance(VALUE ary, VALUE *mean_ptr, VALUE *variance_ptr, size_t ddof, int skip_na)
 {
@@ -919,6 +948,161 @@ ary_mean_variance(VALUE ary, VALUE *mean_ptr, VALUE *variance_ptr, size_t ddof, 
     SET_VARIANCE(DBL2NUM(m2 / (n - ddof)));
   }
 }
+
+#if 0
+static VALUE
+ary_calculate_logsum(VALUE ary, VALUE init, int skip_na, long *na_count_out)
+{
+  VALUE e, v, r;
+  long i, n;
+  int block_given;
+  long na_count = 0;
+
+  block_given = rb_block_given_p();
+
+  if (RARRAY_LEN(ary) == 0) {
+    if (na_count_out != NULL) {
+      *na_count_out = 0;
+    }
+    return init;
+  }
+
+  n = 0;
+  r = Qundef;
+  v = init;
+  for (i = 0; i < RARRAY_LEN(ary); i++) {
+    e = RARRAY_AREF(ary, i);
+    if (block_given)
+      e = rb_yield(e);
+    if (skip_na && is_na(e)) {
+      ++na_count;
+      continue;
+    }
+
+    if (FIXNUM_P(e)) {
+      n += FIX2LONG(e); /* should not overflow long type */
+      if (!FIXABLE(n)) {
+        v = rb_big_plus(LONG2NUM(n), v);
+        n = 0;
+      }
+    }
+    else if (RB_TYPE_P(e, T_BIGNUM))
+      v = rb_big_plus(e, v);
+    else if (RB_TYPE_P(e, T_RATIONAL)) {
+      if (r == Qundef)
+        r = e;
+      else
+        r = rb_rational_plus(r, e);
+    }
+    else
+      goto not_exact;
+  }
+
+  if (n != 0)
+    v = rb_fix_plus(LONG2FIX(n), v);
+  if (r != Qundef)
+    v = rb_rational_plus(r, v);
+  goto finish;
+
+not_exact:
+  if (n != 0)
+    v = rb_fix_plus(LONG2FIX(n), v);
+  if (r != Qundef)
+    v = rb_rational_plus(r, v);
+
+  if (RB_FLOAT_TYPE_P(e)) {
+    /* Kahan's compensated summation algorithm */
+    double f, c;
+
+    f = NUM2DBL(v);
+    c = 0.0;
+    goto has_float_value;
+    for (; i < RARRAY_LEN(ary); i++) {
+      double x, y, t;
+      e = RARRAY_AREF(ary, i);
+      if (block_given)
+        e = rb_yield(e);
+      if (skip_na && is_na(e)) {
+        ++na_count;
+        continue;
+      }
+
+      if (RB_FLOAT_TYPE_P(e))
+        has_float_value:
+          x = RFLOAT_VALUE(e);
+      else if (FIXNUM_P(e))
+        x = FIX2LONG(e);
+      else if (RB_TYPE_P(e, T_BIGNUM))
+        x = rb_big2dbl(e);
+      else if (RB_TYPE_P(e, T_RATIONAL))
+        x = rb_num2dbl(e);
+      else
+        goto not_float;
+
+      y = x - c;
+      t = f + y;
+      c = (t - f) - y;
+      f = t;
+    }
+
+    v = DBL2NUM(f);
+    goto finish;
+
+  not_float:
+    v = DBL2NUM(f);
+  }
+
+  goto has_some_value;
+  for (; i < RARRAY_LEN(ary); i++) {
+    e = RARRAY_AREF(ary, i);
+    if (block_given)
+      e = rb_yield(e);
+    if (skip_na && is_na(e)) {
+      ++na_count;
+      continue;
+    }
+  has_some_value:
+    v = rb_funcall(v, idPLUS, 1, e);
+  }
+
+finish:
+  if (na_count_out != NULL) {
+    *na_count_out = na_count;
+  }
+  return v;
+}
+
+static void
+ary_geomean_f(VALUE ary, VALUE *mean_ptr, size_t ddof, int skip_na)
+{
+  long i;
+  long na_count;
+  size_t n = 0;
+  double m = 0.0, m2 = 0.0, f = 0.0, c = 0.0;
+
+  SET_MEAN(DBL2NUM(0));
+
+  if (RARRAY_LEN(ary) == 0)
+    return;
+  else if (RARRAY_LEN(ary) == 1) {
+    VALUE e = RARRAY_AREF(ary, 0);
+    if (rb_block_given_p())
+      e = rb_yield(e);
+    if (RB_TYPE_P(e, T_COMPLEX))
+      SET_MEAN(e);
+    else {
+      e = rb_Float(e);
+      SET_MEAN(e);
+    }
+    return;
+  }
+
+  VALUE init = DBL2NUM(0.0);
+  VALUE const sum = ary_calculate_logsum(ary, init, skip_na, &na_count);
+  long const n = RARRAY_LEN(ary) - na_count;
+  calculate_and_set_geomean(mean_ptr, sum, n);
+}
+#endif
 
 struct variance_opts {
   int population;
@@ -990,6 +1174,24 @@ ary_mean_variance_m(int argc, VALUE* argv, VALUE ary)
   return rb_assoc_new(mean, variance);
 }
 
+#if 0
+static VALUE
+ary_geomean_variance(int argc, VALUE* argv, VALUE ary)
+{
+  struct variance_opts options;
+  VALUE opts, mean = Qnil, variance = Qnil;
+  size_t ddof = 1;
+
+  rb_scan_args(argc, argv, "0:", &opts);
+  get_variance_opts(opts, &options);
+  if (options.population)
+    ddof = 0;
+
+  ary_mean_variance(ary, &mean, &variance, ddof, options.skip_na);
+  return rb_assoc_new(mean, variance);
+}
+#endif
+
 /* call-seq:
  *    ary.mean(skip_na: false)
  *
@@ -1012,6 +1214,21 @@ ary_mean(int argc, VALUE *argv, VALUE ary)
   ary_mean_variance(ary, &mean, NULL, 1, skip_na);
   return mean;
 }
+
+#if 0
+static VALUE
+ary_geomean(int argc, VALUE *argv, VALUE ary)
+{
+  VALUE geomean = Qnil, opts;
+  int skip_na;
+
+  rb_scan_args(argc, argv, ":", &opts);
+  skip_na = opt_skip_na(opts);
+
+  ary_geomean_variance(ary, &geomean, NULL, 1, skip_na);
+  return geomean;
+}
+#endif
 
 /* call-seq:
  *    ary.variance(population: false, skip_na: false)
@@ -1591,6 +1808,25 @@ ary_mean_stdev(int argc, VALUE* argv, VALUE ary)
   VALUE stdev = sqrt_value(variance);
   return rb_assoc_new(mean, stdev);
 }
+
+#if 0
+static VALUE
+ary_geomean_stdev(int argc, VALUE* argv, VALUE ary)
+{
+  struct variance_opts options;
+  VALUE opts, mean, variance;
+  size_t ddof = 1;
+
+  rb_scan_args(argc, argv, "0:", &opts);
+  get_variance_opts(opts, &options);
+  if (options.population)
+    ddof = 0;
+
+  ary_mean_variance(ary, &mean, &variance, ddof, options.skip_na);
+  VALUE stdev = sqrt_value(variance);
+  return rb_assoc_new(mean, stdev);
+}
+#endif
 
 /* call-seq:
  *    ary.stdev(population: false)
@@ -2549,6 +2785,11 @@ Init_extension(void)
   rb_define_method(rb_cArray, "percentile", ary_percentile, 1);
   rb_define_method(rb_cArray, "median", ary_median, 0);
   rb_define_method(rb_cArray, "value_counts", ary_value_counts, -1);
+#if 0
+  rb_define_method(rb_cArray, "geomean_variance", ary_geomean_variance_m, -1);
+  rb_define_method(rb_cArray, "geomean", ary_geomean, -1);
+  rb_define_method(rb_cArray, "geomean_stdev", ary_geomean_stdev, -1);
+#endif
 
   rb_define_method(rb_cHash, "value_counts", hash_value_counts, -1);
 
